@@ -17,14 +17,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        branch: 
+        branch:
           - "1.12"
           - "1.13"
           - "1.14"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
-        uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.0.0
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
         with:
           ref: v${{ matrix.branch }}
           persist-credentials: false
@@ -33,9 +33,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          REF="v${{ matrix.branch }}"
+          BRANCH="${{ matrix.branch }}"
+          REF="v${BRANCH}"
           SHA=$(git rev-parse ${REF})
-          readarray workflows < <(yq '.triggers["/test-backport-${{ matrix.branch }}"].workflows[]' .github/ariane-config.yaml)
+          readarray workflows < <(TRIGGER="/test-backport-${BRANCH}" yq '.triggers[env(TRIGGER)].workflows[]' .github/ariane-config.yaml)
 
           for workflow in ${workflows[@]}; do
             echo triggering ${workflow}

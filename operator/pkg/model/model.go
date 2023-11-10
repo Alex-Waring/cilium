@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Model holds an abstracted data model representing the translation
@@ -243,8 +244,15 @@ type HTTPRoute struct {
 	// Rewrite defines a schema for a filter that modifies the URL of the request.
 	Rewrite *HTTPURLRewriteFilter `json:"rewrite,omitempty"`
 
-	// RequestMirror defines a schema for a filter that mirrors HTTP requests
-	RequestMirror *HTTPRequestMirror `json:"request_mirror,omitempty"`
+	// RequestMirrors defines a schema for a filter that mirrors HTTP requests
+	// Unlike other filter, multiple request mirrors are supported
+	RequestMirrors []*HTTPRequestMirror `json:"request_mirror,omitempty"`
+
+	// IsGRPC is an indicator if this route is related to GRPC
+	IsGRPC bool `json:"is_grpc,omitempty"`
+
+	// Timeout holds the timeout configuration for a route.
+	Timeout Timeout `json:"timeout,omitempty"`
 }
 
 // GetMatchKey returns the key to be used for matching the backend.
@@ -361,4 +369,12 @@ func (be *BackendPort) GetPort() string {
 		return strconv.Itoa(int(be.Port))
 	}
 	return be.Name
+}
+
+// Timeout holds the timeout configuration for a route.
+type Timeout struct {
+	// Request is the timeout for the request.
+	Request *time.Duration
+	// Backend is the timeout for the backend.
+	Backend *time.Duration
 }

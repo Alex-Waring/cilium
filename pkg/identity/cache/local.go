@@ -13,6 +13,7 @@ import (
 	"github.com/cilium/cilium/pkg/kvstore"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
 
 type localIdentityCache struct {
@@ -20,19 +21,31 @@ type localIdentityCache struct {
 	identitiesByID      map[identity.NumericIdentity]*identity.Identity
 	identitiesByLabels  map[string]*identity.Identity
 	nextNumericIdentity identity.NumericIdentity
+	scope               identity.NumericIdentity
 	minID               identity.NumericIdentity
 	maxID               identity.NumericIdentity
 	events              allocator.AllocatorEventSendChan
+
+	// withheldIdentities is a set of identities that should be considered unavailable for allocation,
+	// but not yet allocated.
+	// They are used during agent restart, where local identities are restored to prevent unnecessary
+	// ID flapping on restart.
+	//
+	// If an old nID is passed to lookupOrCreate(), then it is allowed to use a withhend entry here. Otherwise
+	// it must allocate a new ID not in this set.
+	withheldIdentities map[identity.NumericIdentity]struct{}
 }
 
-func newLocalIdentityCache(minID, maxID identity.NumericIdentity, events allocator.AllocatorEventSendChan) *localIdentityCache {
+func newLocalIdentityCache(scope, minID, maxID identity.NumericIdentity, events allocator.AllocatorEventSendChan) *localIdentityCache {
 	return &localIdentityCache{
 		identitiesByID:      map[identity.NumericIdentity]*identity.Identity{},
 		identitiesByLabels:  map[string]*identity.Identity{},
 		nextNumericIdentity: minID,
+		scope:               scope,
 		minID:               minID,
 		maxID:               maxID,
 		events:              events,
+		withheldIdentities:  map[identity.NumericIdentity]struct{}{},
 	}
 }
 
@@ -50,23 +63,37 @@ func (l *localIdentityCache) bumpNextNumericIdentity() {
 // The l.mutex must be held
 func (l *localIdentityCache) getNextFreeNumericIdentity(idCandidate identity.NumericIdentity) (identity.NumericIdentity, error) {
 	// Try first with the given candidate
-	if idCandidate.HasLocalScope() {
+	if idCandidate.Scope() == l.scope {
 		if _, taken := l.identitiesByID[idCandidate]; !taken {
 			// let nextNumericIdentity be, allocated identities will be skipped anyway
-			log.Debugf("Reallocated restored CIDR identity: %d", idCandidate)
+			log.Debugf("Reallocated restored local identity: %d", idCandidate)
 			return idCandidate, nil
+		} else {
+			log.WithField(logfields.Identity, idCandidate).Debug("Requested local identity not available to allocate")
 		}
 	}
 	firstID := l.nextNumericIdentity
 	for {
-		idCandidate = l.nextNumericIdentity | identity.LocalIdentityFlag
-		if _, taken := l.identitiesByID[idCandidate]; !taken {
+		idCandidate = l.nextNumericIdentity | l.scope
+		_, taken := l.identitiesByID[idCandidate]
+		_, withheld := l.withheldIdentities[idCandidate]
+		if !taken && !withheld {
 			l.bumpNextNumericIdentity()
 			return idCandidate, nil
 		}
 
 		l.bumpNextNumericIdentity()
 		if l.nextNumericIdentity == firstID {
+			// Desperation: no local identities left (unlikely). If there are withheld
+			// but not-taken identities, claim one of them.
+			for withheldID := range l.withheldIdentities {
+				if _, taken := l.identitiesByID[withheldID]; !taken {
+					delete(l.withheldIdentities, withheldID)
+					log.WithField(logfields.Identity, withheldID).Warn("Local identity allocator full; claiming first withheld identity. This may cause momentary policy drops")
+					return withheldID, nil
+				}
+			}
+
 			return 0, fmt.Errorf("out of local identity space")
 		}
 	}
@@ -153,6 +180,40 @@ func (l *localIdentityCache) release(id *identity.Identity) bool {
 	return false
 }
 
+// withhold marks the nids as unavailable. Any out-of-scope identities are returned.
+func (l *localIdentityCache) withhold(nids []identity.NumericIdentity) []identity.NumericIdentity {
+	if len(nids) == 0 {
+		return nil
+	}
+
+	unused := make([]identity.NumericIdentity, 0, len(nids))
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	for _, nid := range nids {
+		if nid.Scope() != l.scope {
+			unused = append(unused, nid)
+			continue
+		}
+		l.withheldIdentities[nid] = struct{}{}
+	}
+
+	return unused
+}
+
+func (l *localIdentityCache) unwithhold(nids []identity.NumericIdentity) {
+	if len(nids) == 0 {
+		return
+	}
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	for _, nid := range nids {
+		if nid.Scope() != l.scope {
+			continue
+		}
+		delete(l.withheldIdentities, nid)
+	}
+}
+
 // lookup searches for a local identity matching the given labels and returns
 // it. If found, the reference count is NOT incremented and thus release must
 // NOT be called.
@@ -195,14 +256,10 @@ func (l *localIdentityCache) GetIdentities() map[identity.NumericIdentity]*ident
 	return cache
 }
 
-// close closes the events channel. The local identity cache is the writing
-// party, hence also needs to close the channel.
+// close removes the events channel.
 func (l *localIdentityCache) close() {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	if l.events != nil {
-		close(l.events)
-		l.events = nil
-	}
+	l.events = nil
 }

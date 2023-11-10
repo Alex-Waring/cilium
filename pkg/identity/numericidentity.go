@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net"
+	"net/netip"
 	"sort"
 	"strconv"
+	"sync"
+	"unsafe"
 
 	cmtypes "github.com/cilium/cilium/pkg/clustermesh/types"
 	api "github.com/cilium/cilium/pkg/k8s/apis/cilium.io"
@@ -19,13 +21,28 @@ import (
 )
 
 const (
-	// ClusterIDShift specifies the number of bits the cluster ID will be
-	// shifted
-	ClusterIDShift = 16
+	// Identities also have scopes, which is defined by the high 8 bits.
+	// 0x00 -- Global and reserved identities. Reserved identities are
+	//         not allocated like global identities, but are known
+	//         because they are hardcoded in Cilium. Older versions of
+	//         Cilium will not be aware of any "new" reserved identities
+	//         that are added.
+	// 0x01 -- local (CIDR) identities
+	// 0x02 -- remote nodes
 
-	// LocalIdentityFlag is the bit in the numeric identity that identifies
-	// a numeric identity to have local scope
-	LocalIdentityFlag = NumericIdentity(1 << 24)
+	// IdentityScopeMask is the top 8 bits of the 32 bit identity
+	IdentityScopeMask = NumericIdentity(0xFF_00_00_00)
+
+	// IdentityScopeGlobal is the identity scope used by global and reserved identities.
+	IdentityScopeGlobal = NumericIdentity(0)
+
+	// IdentityScopeLocal is the tag in the numeric identity that identifies
+	// a numeric identity to have local (CIDR) scope.
+	IdentityScopeLocal = NumericIdentity(1 << 24)
+
+	// IdentityScopeRemoteNode is the tag in the numeric identity that identifies
+	// an identity to be a remote in-cluster node.
+	IdentityScopeRemoteNode = NumericIdentity(2 << 24)
 
 	// MinAllocatorLocalIdentity represents the minimal numeric identity
 	// that the localIdentityCache allocator can allocate for a local (CIDR)
@@ -38,7 +55,7 @@ const (
 
 	// MinLocalIdentity represents the actual minimal numeric identity value
 	// for a local (CIDR) identity.
-	MinLocalIdentity = MinAllocatorLocalIdentity | LocalIdentityFlag
+	MinLocalIdentity = MinAllocatorLocalIdentity | IdentityScopeLocal
 
 	// MaxAllocatorLocalIdentity represents the maximal numeric identity
 	// that the localIdentityCache allocator can allocate for a local (CIDR)
@@ -51,7 +68,7 @@ const (
 
 	// MaxLocalIdentity represents the actual maximal numeric identity value
 	// for a local (CIDR) identity.
-	MaxLocalIdentity = MaxAllocatorLocalIdentity | LocalIdentityFlag
+	MaxLocalIdentity = MaxAllocatorLocalIdentity | IdentityScopeLocal
 
 	// MinimalNumericIdentity represents the minimal numeric identity not
 	// used for reserved purposes.
@@ -67,13 +84,13 @@ const (
 )
 
 var (
-	// MinimalAllocationIdentity is the minimum numeric identity handed out
-	// by the identity allocator.
-	MinimalAllocationIdentity = MinimalNumericIdentity
+	// clusterIDInit ensures that clusterIDLen and clusterIDShift can only be
+	// set once, and only if we haven't used either value elsewhere already.
+	clusterIDInit sync.Once
 
-	// MaximumAllocationIdentity is the maximum numeric identity handed out
-	// by the identity allocator
-	MaximumAllocationIdentity = NumericIdentity((1<<ClusterIDShift)*(option.Config.ClusterID+1) - 1)
+	// clusterIDShift is the number of bits to shift a cluster ID in a numeric
+	// identity and is equal to the number of bits that represent a cluster-local identity.
+	clusterIDShift uint32
 )
 
 const (
@@ -363,22 +380,41 @@ func InitWellKnownIdentities(c Configuration, cinfo cmtypes.ClusterInfo) int {
 	WellKnown.add(ReservedCiliumEtcdOperator2, append(ciliumEtcdOperatorLabels,
 		k8sLabel(api.PodNamespaceMetaNameLabel, c.CiliumNamespaceName())))
 
-	InitMinMaxIdentityAllocation(c, cinfo)
-
 	return len(WellKnown)
 }
 
-// InitMinMaxIdentityAllocation sets the minimal and maximum for identities that
-// should be allocated in the cluster.
-func InitMinMaxIdentityAllocation(c Configuration, cinfo cmtypes.ClusterInfo) {
-	if cinfo.ID > 0 {
+// GetClusterIDShift returns the number of bits to shift a cluster ID in a numeric
+// identity and is equal to the number of bits that represent a cluster-local identity.
+// A sync.Once is used to ensure we only initialize clusterIDShift once.
+func GetClusterIDShift() uint32 {
+	clusterIDInit.Do(initClusterIDShift)
+	return clusterIDShift
+}
+
+// initClusterIDShift sets variables that control the bit allocation of cluster
+// ID in a numeric identity.
+func initClusterIDShift() {
+	// ClusterIDLen is the number of bits that represent a cluster ID in a numeric identity
+	clusterIDLen := uint32(math.Log2(float64(cmtypes.ClusterIDMax + 1)))
+	// ClusterIDShift is the number of bits to shift a cluster ID in a numeric identity
+	clusterIDShift = NumericIdentityBitlength - clusterIDLen
+}
+
+// GetMinimalNumericIdentity returns the minimal numeric identity not used for
+// reserved purposes.
+func GetMinimalAllocationIdentity() NumericIdentity {
+	if option.Config.ClusterID > 0 {
 		// For ClusterID > 0, the identity range just starts from cluster shift,
 		// no well-known-identities need to be reserved from the range.
-		MinimalAllocationIdentity = NumericIdentity((1 << ClusterIDShift) * cinfo.ID)
-		// The maximum identity also needs to be recalculated as ClusterID
-		// may be overwritten by runtime parameters.
-		MaximumAllocationIdentity = NumericIdentity((1<<ClusterIDShift)*(cinfo.ID+1) - 1)
+		return NumericIdentity((1 << GetClusterIDShift()) * option.Config.ClusterID)
 	}
+	return MinimalNumericIdentity
+}
+
+// GetMaximumAllocationIdentity returns the maximum numeric identity that
+// should be handed out by the identity allocator.
+func GetMaximumAllocationIdentity() NumericIdentity {
+	return NumericIdentity((1<<GetClusterIDShift())*(option.Config.ClusterID+1) - 1)
 }
 
 var (
@@ -478,8 +514,23 @@ func DelReservedNumericIdentity(identity NumericIdentity) error {
 //	   24: LocalIdentityFlag: Indicates that the identity has a local scope
 type NumericIdentity uint32
 
+// NumericIdentityBitlength is the number of bits used on the wire for a
+// NumericIdentity
+const NumericIdentityBitlength = 24
+
 // MaxNumericIdentity is the maximum value of a NumericIdentity.
 const MaxNumericIdentity = math.MaxUint32
+
+type NumericIdentitySlice []NumericIdentity
+
+// AsUint32Slice returns the NumericIdentitySlice as a slice of uint32 without copying any data.
+// This is safe as long as the underlying type stays as uint32.
+func (nids NumericIdentitySlice) AsUint32Slice() []uint32 {
+	if len(nids) == 0 {
+		return nil
+	}
+	return unsafe.Slice((*uint32)(&nids[0]), len(nids))
+}
 
 func ParseNumericIdentity(id string) (NumericIdentity, error) {
 	nid, err := strconv.ParseUint(id, 0, 32)
@@ -541,7 +592,7 @@ func (id NumericIdentity) IsReservedIdentity() bool {
 
 // ClusterID returns the cluster ID associated with the identity
 func (id NumericIdentity) ClusterID() uint32 {
-	return (uint32(id) >> 16) & 0xFF
+	return (uint32(id) >> uint32(GetClusterIDShift())) & cmtypes.ClusterIDMax
 }
 
 // GetAllReservedIdentities returns a list of all reserved numeric identities
@@ -564,9 +615,9 @@ func GetAllReservedIdentities() []NumericIdentity {
 // GetWorldIdentityFromIP gets the correct world identity based
 // on the IP address version. If Cilium is not in dual-stack mode
 // then ReservedIdentityWorld will always be returned.
-func GetWorldIdentityFromIP(ip net.IP) NumericIdentity {
+func GetWorldIdentityFromIP(addr netip.Addr) NumericIdentity {
 	if option.Config.IsDualStack() {
-		if ip.To4() == nil {
+		if addr.Is6() {
 			return ReservedIdentityWorldIPv6
 		}
 		return ReservedIdentityWorldIPv4
@@ -583,9 +634,18 @@ func iterateReservedIdentityLabels(f func(_ NumericIdentity, _ labels.Labels)) {
 	}
 }
 
-// HasLocalScope returns true if the identity has a local scope
+// HasLocalScope returns true if the identity is in the Local (CIDR) scope
 func (id NumericIdentity) HasLocalScope() bool {
-	return (id & LocalIdentityFlag) != 0
+	return id.Scope() == IdentityScopeLocal
+}
+
+func (id NumericIdentity) HasRemoteNodeScope() bool {
+	return id.Scope() == IdentityScopeRemoteNode
+}
+
+// Scope returns the identity scope of this given numeric ID.
+func (id NumericIdentity) Scope() NumericIdentity {
+	return id & IdentityScopeMask
 }
 
 // IsWorld returns true if the identity is one of the world identities

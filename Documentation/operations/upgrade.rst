@@ -320,6 +320,21 @@ Annotations:
   labels ``reserved:init``, these policies must be converted to
   ``CiliumClusterwideNetworkPolicy`` by changing the resource type for the
   policy.
+* Cluster name and ID are no longer automatically inferred by Cilium agents
+  running on :ref:`external workloads <external_workloads>`.
+  If the cluster name and ID are different from the default values, you must
+  specify them as parameters.
+  Generate the installation script using Cilium CLI >=v0.15.8 to automatically
+  include these parameters.
+* ``enable-endpoint-routes`` now automatically sets ``enable-local-node-route``
+  to false, as local node routes are redundant when per-endpoint routes are enabled.
+* L7 visibility using Pod annotations (``policy.cilium.io/proxy-visibility``) is
+  no longer supported.
+  We recommend users to switch to L7 policies instead (see :ref:`proxy_visibility`).
+* If you are using Gateway API, please make sure that new v1 CRDs are installed.
+  The existing Gateway API resources will continue to work as usual, however, it is
+  better to migrate your resources from v1beta1 to v1 for GatewayClass, Gateway and
+  HTTPRoute resources.
 
 .. _upgrade_cilium_cli_helm_mode:
 
@@ -345,6 +360,15 @@ Removed Options
   The functionality to dynamically allocate Pod CIDRs is now provided by the more
   flexible ``multi-pool`` IPAM mode.
 
+* The ``install-egress-gateway-routes`` flag has been deprecated because the
+  datapath has been improved to not require any additional routes in
+  ENI environments.
+
+* The ``tunnel`` option (deprecated in Cilium 1.14) has been removed. To
+  enable native-routing mode, set ``routing-mode=native`` (previously
+  ``tunnel=disabled``). To configure the tunneling protocol, set
+  ``tunnel-protocol=vxlan|geneve`` (previously ``tunnel=vxlan|geneve``).
+
 Helm Options
 ~~~~~~~~~~~~
 
@@ -356,10 +380,29 @@ Helm Options
   changed their type from a string to a structured definition that decouples repository and tag. This improves the
   usage in offline environments.
 
+* Prometheus metrics for cilium-operator and clustermesh's kvstore are now enabled by default.
+  If you want to disable these prometheus metrics, set ``operator.prometheus.enabled=false``
+  and ``clustermesh.apiserver.metrics.etcd.enabled=false`` respectively.
+
+* ``egressGateway.installRoutes`` has been deprecated because the setting is no
+  longer necessary.
+
+* Value ``tunnel`` was deprecated in Cilium 1.14 in favor of ``routingMode`` and
+  ``tunnelProtocol``, and has been removed.
+
 Added Metrics
 ~~~~~~~~~~~~~
 
 * ``cilium_ipam_capacity``
+* ``cilium_endpoint_max_ifindex`` See `#27953 <https://github.com/cilium/cilium/pull/27953>`_ for configuration and usage information
+
+Removed Metrics
+~~~~~~~~~~~~~~~
+
+The following deprecated metrics were removed:
+
+* ``cilium_policy_l7_parse_errors_total``, ``cilium_policy_l7_forwarded_total``, ``cilium_policy_l7_denied_total``, ``cilium_policy_l7_received_total`` (replaced by ``cilium_policy_l7_total``)
+* ``cilium_policy_import_errors_total`` (replaced by ``cilium_policy_change_total``).
 
 Changed Metrics
 ~~~~~~~~~~~~~~~
@@ -372,6 +415,10 @@ Changed Metrics
   ``*_api_limiter_wait_duration_seconds`` metrics.
 * The ``cilium_bpf_map_pressure`` for policy maps is now exposed as a single
   label ``cilium_policy_*``, rather than a label per policy map of an endpoint.
+* ``cilium_policy_l7_total`` now has label ``proxy_type`` to distinguish between fqdn and envoy proxy requests.
+* The ``cilium_cidrgroup_policies`` metric has been renamed to
+  ``cilium_cidrgroups_referenced`` for better clarity.
+* The ``cilium_cidrgroup_translation_time_stats_seconds`` metric has been disabled by default.
 
 .. _earlier_upgrade_notes:
 
@@ -400,7 +447,7 @@ available during the upgrade:
   will be postponed to after the upgrade has been completed on a particular
   node.
 
-* Monitoring components such as ``cilium monitor`` will experience a brief
+* Monitoring components such as ``cilium-dbg monitor`` will experience a brief
   outage while the Cilium pod is restarting. Events are queued up and read
   after the upgrade. If the number of events exceeds the event buffer size,
   events will be lost.
@@ -578,7 +625,7 @@ Example migration
 
 .. code-block:: shell-session
 
-      $ kubectl exec -n kube-system cilium-pre-flight-check-1234 -- cilium preflight migrate-identity
+      $ kubectl exec -n kube-system cilium-pre-flight-check-1234 -- cilium-dbg preflight migrate-identity
       INFO[0000] Setting up kvstore client
       INFO[0000] Connecting to etcd server...                  config=/var/lib/cilium/etcd-config.yml endpoints="[https://192.168.60.11:2379]" subsys=kvstore
       INFO[0000] Setting up kubernetes client
@@ -620,7 +667,7 @@ Once the migration is complete, confirm the endpoint identities match by listing
 .. code-block:: shell-session
 
       $ kubectl get ciliumendpoints -A # new CRD-backed endpoints
-      $ kubectl exec -n kube-system cilium-1234 -- cilium endpoint list # existing etcd-backed endpoints
+      $ kubectl exec -n kube-system cilium-1234 -- cilium-dbg endpoint list # existing etcd-backed endpoints
 
 Clearing CRD identities
 ~~~~~~~~~~~~~~~~~~~~~~~

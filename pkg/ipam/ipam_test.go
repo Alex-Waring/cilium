@@ -45,10 +45,10 @@ func (t *testConfiguration) IPAMMode() string                         { return i
 func (t *testConfiguration) SetIPv4NativeRoutingCIDR(cidr *cidr.CIDR) {}
 func (t *testConfiguration) GetIPv4NativeRoutingCIDR() *cidr.CIDR     { return nil }
 
-type fakeMetadataFunc func(owner string) (pool string, err error)
+type fakeMetadataFunc func(owner string, family Family) (pool string, err error)
 
-func (f fakeMetadataFunc) GetIPPoolForPod(owner string) (pool string, err error) {
-	return f(owner)
+func (f fakeMetadataFunc) GetIPPoolForPod(owner string, family Family) (pool string, err error) {
+	return f(owner, family)
 }
 
 type fakePoolAllocator struct {
@@ -131,7 +131,7 @@ func (f fakePoolAllocator) RestoreFinished() {}
 
 func (s *IPAMSuite) TestLock(c *C) {
 	fakeAddressing := fake.NewNodeAddressing()
-	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &mtuMock, nil)
+	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &resourceMock{}, &mtuMock, nil)
 
 	// Since the IPs we have allocated to the endpoints might or might not
 	// be in the allocrange specified in cilium, we need to specify them
@@ -142,38 +142,38 @@ func (s *IPAMSuite) TestLock(c *C) {
 	ipv6 = ipv6.Next()
 
 	// Forcefully release possible allocated IPs
-	ipam.IPv4Allocator.Release(ipv4.AsSlice(), PoolDefault)
-	ipam.IPv6Allocator.Release(ipv6.AsSlice(), PoolDefault)
+	ipam.IPv4Allocator.Release(ipv4.AsSlice(), PoolDefault())
+	ipam.IPv6Allocator.Release(ipv6.AsSlice(), PoolDefault())
 
 	// Let's allocate the IP first so we can see the tests failing
-	result, err := ipam.IPv4Allocator.Allocate(ipv4.AsSlice(), "test", PoolDefault)
+	result, err := ipam.IPv4Allocator.Allocate(ipv4.AsSlice(), "test", PoolDefault())
 	c.Assert(err, IsNil)
 	c.Assert(result.IP, checker.DeepEquals, net.IP(ipv4.AsSlice()))
 }
 
 func (s *IPAMSuite) TestExcludeIP(c *C) {
 	fakeAddressing := fake.NewNodeAddressing()
-	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &mtuMock, nil)
+	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &resourceMock{}, &mtuMock, nil)
 
 	ipv4 := fakeIPv4AllocCIDRIP(fakeAddressing)
 	ipv4 = ipv4.Next()
 
-	ipam.ExcludeIP(ipv4.AsSlice(), "test-foo", PoolDefault)
-	err := ipam.AllocateIP(ipv4.AsSlice(), "test-bar", PoolDefault)
+	ipam.ExcludeIP(ipv4.AsSlice(), "test-foo", PoolDefault())
+	err := ipam.AllocateIP(ipv4.AsSlice(), "test-bar", PoolDefault())
 	c.Assert(err, Not(IsNil))
 	c.Assert(err, ErrorMatches, ".* owned by test-foo")
-	err = ipam.ReleaseIP(ipv4.AsSlice(), PoolDefault)
+	err = ipam.ReleaseIP(ipv4.AsSlice(), PoolDefault())
 	c.Assert(err, IsNil)
 
 	ipv6 := fakeIPv6AllocCIDRIP(fakeAddressing)
 	ipv6 = ipv6.Next()
 
-	ipam.ExcludeIP(ipv6.AsSlice(), "test-foo", PoolDefault)
-	err = ipam.AllocateIP(ipv6.AsSlice(), "test-bar", PoolDefault)
+	ipam.ExcludeIP(ipv6.AsSlice(), "test-foo", PoolDefault())
+	err = ipam.AllocateIP(ipv6.AsSlice(), "test-bar", PoolDefault())
 	c.Assert(err, Not(IsNil))
 	c.Assert(err, ErrorMatches, ".* owned by test-foo")
-	ipam.ReleaseIP(ipv6.AsSlice(), PoolDefault)
-	err = ipam.ReleaseIP(ipv4.AsSlice(), PoolDefault)
+	ipam.ReleaseIP(ipv6.AsSlice(), PoolDefault())
+	err = ipam.ReleaseIP(ipv4.AsSlice(), PoolDefault())
 	c.Assert(err, IsNil)
 }
 
@@ -184,7 +184,7 @@ func (s *IPAMSuite) TestDeriveFamily(c *C) {
 
 func (s *IPAMSuite) TestIPAMMetadata(c *C) {
 	fakeAddressing := fake.NewNodeAddressing()
-	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &mtuMock, nil)
+	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &resourceMock{}, &mtuMock, nil)
 	ipam.IPv4Allocator = newFakePoolAllocator(map[string]string{
 		"default": "10.10.0.0/16",
 		"test":    "192.168.178.0/24",
@@ -196,13 +196,13 @@ func (s *IPAMSuite) TestIPAMMetadata(c *C) {
 		"special": "fe00:100::/80",
 	})
 
-	// Without metadata, should always return PoolDefault
+	// Without metadata, should always return PoolDefault()
 	resIPv4, resIPv6, err := ipam.AllocateNext("", "test/some-pod", "")
 	c.Assert(err, IsNil)
-	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault)
-	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault)
+	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault())
+	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault())
 
-	ipam.WithMetadata(fakeMetadataFunc(func(owner string) (pool string, err error) {
+	ipam.WithMetadata(fakeMetadataFunc(func(owner string, family Family) (pool string, err error) {
 		// use namespace to determine pool name
 		namespace, _, _ := strings.Cut(owner, "/")
 		switch namespace {
@@ -213,7 +213,7 @@ func (s *IPAMSuite) TestIPAMMetadata(c *C) {
 		case "error":
 			return "", fmt.Errorf("unable to determine pool for %s", owner)
 		default:
-			return PoolDefault.String(), nil
+			return PoolDefault().String(), nil
 		}
 	}))
 
@@ -247,8 +247,8 @@ func (s *IPAMSuite) TestIPAMMetadata(c *C) {
 	// Checks if fallback to default works
 	resIPv4, resIPv6, err = ipam.AllocateNext("", "other/special-pod", "")
 	c.Assert(err, IsNil)
-	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault)
-	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault)
+	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault())
+	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault())
 
 	// Checks if metadata errors are propagated
 	_, _, err = ipam.AllocateNext("", "error/special-value", "")
@@ -258,11 +258,11 @@ func (s *IPAMSuite) TestIPAMMetadata(c *C) {
 func (s *IPAMSuite) TestLegacyAllocatorIPAMMetadata(c *C) {
 	// This test uses a regular hostScope allocator which does not support
 	// IPAM pools. We assert that in this scenario, the pool returned in the
-	// AllocationResult is always set to PoolDefault, regardless of the requested
+	// AllocationResult is always set to PoolDefault(), regardless of the requested
 	// pool
 	fakeAddressing := fake.NewNodeAddressing()
-	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &mtuMock, nil)
-	ipam.WithMetadata(fakeMetadataFunc(func(owner string) (pool string, err error) {
+	ipam := NewIPAM(fakeAddressing, &testConfiguration{}, &ownerMock{}, &ownerMock{}, &resourceMock{}, &mtuMock, nil)
+	ipam.WithMetadata(fakeMetadataFunc(func(owner string, family Family) (pool string, err error) {
 		return "some-pool", nil
 	}))
 
@@ -276,29 +276,29 @@ func (s *IPAMSuite) TestLegacyAllocatorIPAMMetadata(c *C) {
 	ipv4 = ipv4.Next()
 	resIPv4, err := ipam.AllocateIPWithoutSyncUpstream(ipv4.AsSlice(), "default/specific-ip", "override")
 	c.Assert(err, IsNil)
-	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault)
+	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault())
 
 	// AllocateIP with default pool
 	ipv4 = ipv4.Next()
 	resIPv4, err = ipam.AllocateIPWithoutSyncUpstream(ipv4.AsSlice(), "default/specific-ip", "default")
 	c.Assert(err, IsNil)
-	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault)
+	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault())
 
 	// AllocateNext with empty pool
 	resIPv4, resIPv6, err := ipam.AllocateNext("", "test/some-pod", "")
 	c.Assert(err, IsNil)
-	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault)
-	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault)
+	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault())
+	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault())
 
 	// AllocateNext with specific pool
 	resIPv4, resIPv6, err = ipam.AllocateNext("", "test/some-other-pod", "override")
 	c.Assert(err, IsNil)
-	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault)
-	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault)
+	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault())
+	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault())
 
 	// AllocateNext with default pool
 	resIPv4, resIPv6, err = ipam.AllocateNext("", "test/some-other-pod", "default")
 	c.Assert(err, IsNil)
-	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault)
-	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault)
+	c.Assert(resIPv4.IPPoolName, Equals, PoolDefault())
+	c.Assert(resIPv6.IPPoolName, Equals, PoolDefault())
 }

@@ -379,9 +379,8 @@ static __always_inline int reverse_map_l4_port(struct __ctx_buff *ctx, __u8 next
 			int ret;
 
 			/* Port offsets for UDP and TCP are the same */
-			ret = l4_load_port(ctx, l4_off + TCP_SPORT_OFF, &old_port);
-			if (IS_ERR(ret))
-				return ret;
+			if (l4_load_port(ctx, l4_off + TCP_SPORT_OFF, &old_port) < 0)
+				return DROP_INVALID;
 
 			if (port != old_port) {
 #ifdef ENABLE_SCTP
@@ -1194,14 +1193,8 @@ lb4_extract_tuple(struct __ctx_buff *ctx, struct iphdr *ip4, int l3_off, int *l4
 #ifdef ENABLE_SCTP
 	case IPPROTO_SCTP:
 #endif  /* ENABLE_SCTP */
-#ifdef ENABLE_IPV4_FRAGMENTS
-		ret = ipv4_handle_fragmentation(ctx, ip4, *l4_off,
-						CT_EGRESS,
-						(struct ipv4_frag_l4ports *)&tuple->dport,
-						NULL);
-#else
-		ret = l4_load_ports(ctx, *l4_off, &tuple->dport);
-#endif
+		ret = ipv4_load_l4_ports(ctx, ip4, *l4_off, CT_EGRESS,
+					 &tuple->dport, NULL);
 
 		if (IS_ERR(ret))
 			return ret;

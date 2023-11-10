@@ -3,7 +3,7 @@ description: Derive Cilium installation config
 inputs:
   image-tag:
     description: 'SHA or tag'
-    required: true
+    required: false
   chart-dir:
     description: 'Path to Cilium charts directory'
     required: true
@@ -53,23 +53,14 @@ outputs:
 runs:
   using: composite
   steps:
+    - uses: ./.github/actions/set-env-variables
     - shell: bash
       id: derive-config
       run: |
         DEFAULTS="--wait \
             --chart-directory=${{ inputs.chart-dir }} \
-            --helm-set=image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci \
-            --helm-set=image.useDigest=false \
-            --helm-set=image.tag=${{ inputs.image-tag }} \
             --helm-set=debug.enabled=true \
             --helm-set=debug.verbose=envoy \
-            --helm-set=operator.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator \
-            --helm-set=operator.image.suffix=-ci \
-            --helm-set=operator.image.tag=${{ inputs.image-tag }} \
-            --helm-set=operator.image.useDigest=false \
-            --helm-set=hubble.relay.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/hubble-relay-ci \
-            --helm-set=hubble.relay.image.tag=${{ inputs.image-tag }} \
-            --helm-set=hubble.relay.image.useDigest=false \
             --helm-set=hubble.eventBufferCapacity=65535 \
             --helm-set=bpf.monitorAggregation=none \
             --helm-set=cluster.name=default \
@@ -78,9 +69,23 @@ runs:
             --helm-set-string=kubeProxyReplacement=${{ inputs.kpr }} \
             --set='${{ inputs.misc }}'"
 
+          IMAGE=""
+          if [ "${{ inputs.image-tag }}" != "" ]; then
+            IMAGE="--helm-set=image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/cilium-ci \
+            --helm-set=image.useDigest=false \
+            --helm-set=image.tag=${{ inputs.image-tag }} \
+            --helm-set=operator.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/operator \
+            --helm-set=operator.image.suffix=-ci \
+            --helm-set=operator.image.tag=${{ inputs.image-tag }} \
+            --helm-set=operator.image.useDigest=false \
+            --helm-set=hubble.relay.image.repository=quay.io/${{ env.QUAY_ORGANIZATION_DEV }}/hubble-relay-ci \
+            --helm-set=hubble.relay.image.tag=${{ inputs.image-tag }} \
+            --helm-set=hubble.relay.image.useDigest=false"
+          fi
+
           TUNNEL="--helm-set-string=tunnelProtocol=${{ inputs.tunnel }}"
           if [ "${{ inputs.tunnel }}" == "disabled" ]; then
-            TUNNEL="--helm-set-string=routingMode=native --helm-set-string=autoDirectNodeRoutes=true --helm-set-string=ipv4NativeRoutingCIDR=10.244.0.0/16 --helm-set-string=tunnel=disabled"
+            TUNNEL="--helm-set-string=routingMode=native --helm-set-string=autoDirectNodeRoutes=true --helm-set-string=ipv4NativeRoutingCIDR=10.244.0.0/16"
             TUNNEL="${TUNNEL} --helm-set-string=ipv6NativeRoutingCIDR=fd00:10:244::/56"
           fi
 
@@ -116,7 +121,7 @@ runs:
 
           EGRESS_GATEWAY=""
           if [ "${{ inputs.egress-gateway }}" == "true" ]; then
-            EGRESS_GATEWAY="--helm-set=egressGateway.enabled=true"
+            EGRESS_GATEWAY="${{ env.EGRESS_GATEWAY_HELM_VALUES }}"
           fi
 
           LB_ACCELERATION=""
@@ -137,5 +142,5 @@ runs:
             HOST_FW="--helm-set=hostFirewall.enabled=true"
           fi
 
-          CONFIG="${DEFAULTS} ${TUNNEL} ${DEVICES} ${LB_MODE} ${ENDPOINT_ROUTES} ${IPV6} ${MASQ} ${EGRESS_GATEWAY} ${ENCRYPT} ${HOST_FW} ${LB_ACCELERATION}"
+          CONFIG="${DEFAULTS} ${IMAGE} ${TUNNEL} ${DEVICES} ${LB_MODE} ${ENDPOINT_ROUTES} ${IPV6} ${MASQ} ${EGRESS_GATEWAY} ${ENCRYPT} ${HOST_FW} ${LB_ACCELERATION}"
           echo "config=${CONFIG}" >> $GITHUB_OUTPUT

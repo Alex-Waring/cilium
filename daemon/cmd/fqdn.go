@@ -16,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/cilium/dns"
 	"github.com/go-openapi/runtime/middleware"
@@ -43,6 +42,7 @@ import (
 	"github.com/cilium/cilium/pkg/proxy/accesslog"
 	"github.com/cilium/cilium/pkg/proxy/logger"
 	proxytypes "github.com/cilium/cilium/pkg/proxy/types"
+	"github.com/cilium/cilium/pkg/time"
 	"github.com/cilium/cilium/pkg/u8proto"
 )
 
@@ -377,8 +377,10 @@ func (d *Daemon) bootstrapFQDN(possibleEndpoints map[uint16]*endpoint.Endpoint, 
 	if err := re.InitRegexCompileLRU(option.Config.FQDNRegexCompileLRUSize); err != nil {
 		return fmt.Errorf("could not initialize regex LRU cache: %w", err)
 	}
-	proxy.DefaultDNSProxy, err = dnsproxy.StartDNSProxy("", port, option.Config.ToFQDNsEnableDNSCompression,
-		option.Config.DNSMaxIPsPerRestoredRule, d.lookupEPByIP, d.LookupSecIDByIP, d.lookupIPsBySecID,
+	proxy.DefaultDNSProxy, err = dnsproxy.StartDNSProxy("", port,
+		option.Config.EnableIPv4, option.Config.EnableIPv6,
+		option.Config.ToFQDNsEnableDNSCompression,
+		option.Config.DNSMaxIPsPerRestoredRule, d.lookupEPByIP, d.ipcache.LookupSecIDByIP, d.lookupIPsBySecID,
 		d.notifyOnDNSMsg, option.Config.DNSProxyConcurrencyLimit, option.Config.DNSProxyConcurrencyProcessingGracePeriod)
 	if err == nil {
 		// Increase the ProxyPort reference count so that it will never get released.
@@ -425,14 +427,10 @@ func (d *Daemon) updateSelectors(ctx context.Context, selectorWithIPsToUpdate ma
 }
 
 // lookupEPByIP returns the endpoint that this IP belongs to
-func (d *Daemon) lookupEPByIP(endpointIP net.IP) (endpoint *endpoint.Endpoint, err error) {
-	endpointAddr, ok := ippkg.AddrFromIP(endpointIP)
-	if !ok {
-		return nil, fmt.Errorf("invalid IP %s for endpoint lookup", endpointIP)
-	}
+func (d *Daemon) lookupEPByIP(endpointAddr netip.Addr) (endpoint *endpoint.Endpoint, err error) {
 	e := d.endpointManager.LookupIP(endpointAddr)
 	if e == nil {
-		return nil, fmt.Errorf("Cannot find endpoint with IP %s", endpointIP.String())
+		return nil, fmt.Errorf("cannot find endpoint with IP %s", endpointAddr)
 	}
 
 	return e, nil
@@ -449,9 +447,12 @@ func (d *Daemon) lookupIPsBySecID(nid identity.NumericIdentity) []string {
 //   - Report a monitor error event and proxy metrics when the proxy sees an
 //     error, and when it can't process something in this function
 //   - Report the verdict in a monitor event and emit proxy metrics
-//   - Insert the DNS data into the cache when msg is a DNS response and we
-//     can lookup the endpoint related to it
+//   - Insert the DNS data into the cache when msg is a DNS response, and we
+//     can lookup the endpoint related to it.
 //
+// It may return dnsproxy.ErrDNSRequestNoEndpoint{} error if the endpoint is nil.
+// Note that the caller should log beforehand the contextualized error.
+
 // epIPPort and serverAddr should match the original request, where epAddr is
 // the source for egress (the only case current).
 // serverID is the destination server security identity at the time of the DNS event.
@@ -509,12 +510,8 @@ func (d *Daemon) notifyOnDNSMsg(lookupTime time.Time, ep *endpoint.Endpoint, epI
 		// cache if we don't know that an endpoint asked for it (this is
 		// asserted via ep != nil here and msg.Response && msg.Rcode ==
 		// dns.RcodeSuccess below).
-		err := dnsproxy.ErrDNSRequestNoEndpoint{}
-		log.WithFields(logrus.Fields{
-			logfields.L3n4Addr: epIPPort,
-		}).WithError(err).Error("cannot find matching endpoint")
 		endMetric()
-		return err
+		return dnsproxy.ErrDNSRequestNoEndpoint{}
 	}
 
 	// We determine the direction based on the DNS packet. The observation
@@ -552,7 +549,7 @@ func (d *Daemon) notifyOnDNSMsg(lookupTime time.Time, ep *endpoint.Endpoint, epI
 			serverPort = uint16(serverPortUint64)
 		}
 	}
-	ep.UpdateProxyStatistics(strings.ToUpper(protocol), serverPort, false, !msg.Response, verdict)
+	ep.UpdateProxyStatistics("fqdn", strings.ToUpper(protocol), serverPort, false, !msg.Response, verdict)
 
 	if msg.Response && msg.Rcode == dns.RcodeSuccess && len(responseIPs) > 0 {
 		stat.PolicyGenerationTime.Start()

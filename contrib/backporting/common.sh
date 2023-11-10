@@ -12,7 +12,7 @@ get_remote () {
   local org=${1:-cilium}
   local repo=${2:-cilium}
   remote=$(git remote -v | \
-    grep "github.com[/:]${org}/${repo} " | \
+    grep "github.com[/:]${org}/${repo}\(\.git\)\? " | \
     head -n1 | cut -f1)
   if [ -z "$remote" ]; then
       echo "No remote git@github.com:${org}/${repo}.git or https://github.com/${org}/${repo} found" 1>&2
@@ -81,4 +81,16 @@ get_branch_from_version() {
         branch="main"
     fi
     echo "$branch"
+}
+
+# $1 - VERSION
+version_is_prerelease() {
+    case "$1" in
+        *pre*|*rc*|*snapshot*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }

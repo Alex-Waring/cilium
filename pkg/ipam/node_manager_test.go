@@ -22,6 +22,7 @@ import (
 	"github.com/cilium/cilium/pkg/lock"
 	"github.com/cilium/cilium/pkg/math"
 	"github.com/cilium/cilium/pkg/testutils"
+	testipam "github.com/cilium/cilium/pkg/testutils/ipam"
 )
 
 var (
@@ -493,7 +494,7 @@ func (e *IPAMSuite) TestNodeManagerReleaseAddress(c *check.C) {
 		time.Sleep(1 * time.Second)
 		node.PopulateIPReleaseStatus(node.resource)
 		// Fake acknowledge IPs for release like agent would.
-		testutils.FakeAcknowledgeReleaseIps(node.resource)
+		testipam.FakeAcknowledgeReleaseIps(node.resource)
 		// Resync one more time to process acknowledgements.
 		node.instanceSync.Trigger()
 	})
@@ -501,7 +502,7 @@ func (e *IPAMSuite) TestNodeManagerReleaseAddress(c *check.C) {
 	c.Assert(testutils.WaitUntil(func() bool { return reachedAddressesNeeded(mngr, "node3", 0) }, 5*time.Second), check.IsNil)
 	node = mngr.Get("node3")
 	c.Assert(node, check.Not(check.IsNil))
-	c.Assert(node.Stats().AvailableIPs, check.Equals, 18)
+	c.Assert(node.Stats().AvailableIPs, check.Equals, 19)
 	c.Assert(node.Stats().UsedIPs, check.Equals, 10)
 }
 
@@ -557,7 +558,7 @@ func (e *IPAMSuite) TestNodeManagerAbortRelease(c *check.C) {
 		c.Assert(len(node.resource.Status.IPAM.ReleaseIPs), check.Equals, 1)
 
 		// Fake acknowledge IPs for release like agent would.
-		testutils.FakeAcknowledgeReleaseIps(node.resource)
+		testipam.FakeAcknowledgeReleaseIps(node.resource)
 
 		// Use up one more IP to make excess = 0
 		mngr.Upsert(updateCiliumNode(node.resource, 3))

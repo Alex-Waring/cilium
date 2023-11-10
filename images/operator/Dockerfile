@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 ARG BASE_IMAGE=scratch
-ARG GOLANG_IMAGE=docker.io/library/golang:1.21.1@sha256:1c545bb2b085f60435dfffb884a1c831d8b1a7fd9b4a1bf58715113d70c305b5
-ARG ALPINE_IMAGE=docker.io/library/alpine:3.18.3@sha256:7144f7bab3d4c2648d7e59409f15ec52a18006a128c733fcff20d3a4a54ba44a
-ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:ebdc0986083d662ac4f07e1d91cd409108a1c212@sha256:d5380184c4797dd739619eb48997e6d531c2de314699bc2a1b13dca72343b72a
+ARG GOLANG_IMAGE=docker.io/library/golang:1.21.3@sha256:24a09375a6216764a3eda6a25490a88ac178b5fcb9511d59d0da5ebf9e496474
+ARG ALPINE_IMAGE=docker.io/library/alpine:3.18.4@sha256:eece025e432126ce23f223450a0326fbebde39cdf496a85d8c016293fc851978
+ARG CILIUM_BUILDER_IMAGE=quay.io/cilium/cilium-builder:b1cc098be0068fbb3d200e6cf940ce06ec8f3857@sha256:6a45642f4be3d6363ad9bc01ce0a2e0b64f202f0af4ea8adcc6400172d610cdf
 
 # BUILDPLATFORM is an automatic platform ARG enabled by Docker BuildKit.
 # Represents the plataform where the build is happening, do not mix with

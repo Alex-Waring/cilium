@@ -8,13 +8,14 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	agentK8s "github.com/cilium/cilium/daemon/k8s"
 	"github.com/cilium/cilium/pkg/cidr"
 	"github.com/cilium/cilium/pkg/datapath/types"
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
 	"github.com/cilium/cilium/pkg/k8s/client"
-	"github.com/cilium/cilium/pkg/k8s/watchers/subscriber"
 	"github.com/cilium/cilium/pkg/logging"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/option"
 )
 
 var (
@@ -87,11 +88,6 @@ type K8sEventRegister interface {
 	// K8sEventProcessed is called to do metrics accounting for each processed
 	// Kubernetes event.
 	K8sEventProcessed(scope string, action string, status bool)
-
-	// RegisterCiliumNodeSubscriber allows registration of subscriber.CiliumNode
-	// implementations. Events for all CiliumNode events (not just the local one)
-	// will be sent to the subscriber.
-	RegisterCiliumNodeSubscriber(s subscriber.CiliumNode)
 }
 
 type MtuConfiguration interface {
@@ -99,11 +95,11 @@ type MtuConfiguration interface {
 }
 
 type Metadata interface {
-	GetIPPoolForPod(owner string) (pool string, err error)
+	GetIPPoolForPod(owner string, family Family) (pool string, err error)
 }
 
 // NewIPAM returns a new IP address manager
-func NewIPAM(nodeAddressing types.NodeAddressing, c Configuration, owner Owner, k8sEventReg K8sEventRegister, mtuConfig MtuConfiguration, clientset client.Clientset) *IPAM {
+func NewIPAM(nodeAddressing types.NodeAddressing, c Configuration, owner Owner, k8sEventReg K8sEventRegister, node agentK8s.LocalCiliumNodeResource, mtuConfig MtuConfiguration, clientset client.Clientset) *IPAM {
 	ipam := &IPAM{
 		nodeAddressing:   nodeAddressing,
 		config:           c,
@@ -128,7 +124,7 @@ func NewIPAM(nodeAddressing types.NodeAddressing, c Configuration, owner Owner, 
 		}
 	case ipamOption.IPAMMultiPool:
 		log.Info("Initializing MultiPool IPAM")
-		manager := newMultiPoolManager(c, k8sEventReg, owner, clientset.CiliumV2().CiliumNodes())
+		manager := newMultiPoolManager(c, node, owner, clientset.CiliumV2().CiliumNodes())
 
 		if c.IPv6Enabled() {
 			ipam.IPv6Allocator = manager.Allocator(IPv6)
@@ -215,7 +211,12 @@ func (ipam *IPAM) isIPExcluded(ip net.IP, pool Pool) (string, bool) {
 // PoolOrDefault returns the default pool if no pool is specified.
 func PoolOrDefault(pool string) Pool {
 	if pool == "" {
-		return PoolDefault
+		return PoolDefault()
 	}
 	return Pool(pool)
+}
+
+// PoolDefault returns the default pool
+func PoolDefault() Pool {
+	return Pool(option.Config.IPAMDefaultIPPool)
 }

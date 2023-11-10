@@ -129,7 +129,7 @@ func (ds *DaemonFQDNSuite) SetUpTest(c *C) {
 		Cache:           fqdn.NewDNSCache(0),
 		UpdateSelectors: d.updateSelectors,
 	})
-	d.endpointManager = endpointmanager.New(&dummyEpSyncher{})
+	d.endpointManager = endpointmanager.New(&dummyEpSyncher{}, nil)
 	d.policy.GetSelectorCache().SetLocalIdentityNotifier(d.dnsNameManager)
 	d.ipcache = ipcache.NewIPCache(&ipcache.Configuration{
 		Context:           context.TODO(),
@@ -144,7 +144,7 @@ func (ds *DaemonFQDNSuite) SetUpTest(c *C) {
 
 type dummyInfoRegistry struct{}
 
-func (*dummyInfoRegistry) FillEndpointInfo(info *accesslog.EndpointInfo, ip net.IP, id identity.NumericIdentity) {
+func (*dummyInfoRegistry) FillEndpointInfo(info *accesslog.EndpointInfo, addr netip.Addr, id identity.NumericIdentity) {
 }
 
 // makeIPs generates count sequential IPv4 IPs
@@ -212,7 +212,7 @@ func (ds *DaemonFQDNSuite) Benchmark_notifyOnDNSMsg(c *C) {
 			ID:   uint16(c.N % 65000),
 			IPv4: netip.MustParseAddr(fmt.Sprintf("10.96.%d.%d", (c.N>>16)%8, c.N%256)),
 			SecurityIdentity: &identity.Identity{
-				ID: identity.NumericIdentity(c.N % int(identity.MaximumAllocationIdentity)),
+				ID: identity.NumericIdentity(c.N % int(identity.GetMaximumAllocationIdentity())),
 			},
 			DNSZombies: &fqdn.DNSZombieMappings{
 				Mutex: lock.Mutex{},
