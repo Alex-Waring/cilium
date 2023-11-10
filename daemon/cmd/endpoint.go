@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/go-openapi/runtime/middleware"
@@ -338,6 +339,11 @@ func (d *Daemon) createEndpoint(ctx context.Context, owner regeneration.Owner, e
 		// Indicate to insert a per endpoint route instead of routing
 		// via cilium_host interface
 		epTemplate.DatapathConfiguration.InstallEndpointRoute = true
+		// Skip creating an endpoint route if we are in AWS using chaining mode and the endpoint is a vlan
+		// This happens when the endpoint has an SG attached, and the endpoint route causes asymetric routing
+		if option.CNIChainingMode == "aws-cni" && strings.HasPrefix(epTemplate.InterfaceName, "vlan") {
+			epTemplate.DatapathConfiguration.InstallEndpointRoute = false
+		}
 
 		// Since routing occurs via endpoint interface directly, BPF
 		// program is needed on that device at egress as BPF program on

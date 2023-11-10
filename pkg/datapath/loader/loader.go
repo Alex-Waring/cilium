@@ -448,14 +448,7 @@ func (l *Loader) reloadDatapath(ctx context.Context, ep datapath.Endpoint, dirs 
 		defer finalize()
 	}
 
-	// Skip creating an endpoint route if we are in AWS using chaining mode and the endpoint is a vlan
-	// This happens when the endpoint has an SG attached, and the endpoint route causes asymetric routing
-	skipEndpointRoute := false
-	if option.CNIChainingMode == "aws-cni" && strings.HasPrefix(ep.InterfaceName(), "vlan") {
-		skipEndpointRoute = true
-	}
-
-	if ep.RequireEndpointRoute() && !skipEndpointRoute {
+	if ep.RequireEndpointRoute() {
 		scopedLog := ep.Logger(Subsystem).WithFields(logrus.Fields{
 			logfields.Veth: ep.InterfaceName(),
 		})
